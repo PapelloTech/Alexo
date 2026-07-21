@@ -68,7 +68,14 @@ export async function POST(request: Request) {
       const errorText = await n8nResponse.text().catch(() => "Resposta inválida do n8n");
       console.error("n8n error:", n8nResponse.status, errorText);
       return NextResponse.json(
-        { speech: "Não consegui completar a solicitação.", status: "error" },
+        {
+          speech: "Não consegui completar a solicitação.",
+          status: "error",
+          debug: {
+            n8nStatus: n8nResponse.status,
+            n8nBody: errorText.slice(0, 500),
+          },
+        },
         { status: 502 }
       );
     }
@@ -82,7 +89,11 @@ export async function POST(request: Request) {
 
     if (!data.speech) {
       return NextResponse.json(
-        { speech: "Resposta do assistente não contém frase.", status: "error" },
+        {
+          speech: "Resposta do assistente não contém frase.",
+          status: "error",
+          debug: { n8nStatus: n8nResponse.status, n8nBody: data },
+        },
         { status: 502 }
       );
     }
