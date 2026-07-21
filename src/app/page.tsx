@@ -34,12 +34,22 @@ interface SpeechRecognitionLike {
   onend: (() => void) | null;
 }
 
+function getSpeechRecognitionConstructor():
+  | (new () => SpeechRecognitionLike)
+  | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (
+    (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ||
+    (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike }).webkitSpeechRecognition
+  );
+}
+
 export default function Home() {
   const [state, setState] = useState<AppState>("IDLE");
   const [recognizedText, setRecognizedText] = useState("");
   const [responseText, setResponseText] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
-  const [wakeLockActive, setWakeLockActive] = useState(false);
+  const [isSpeechSupported] = useState(() => !!getSpeechRecognitionConstructor());
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
@@ -70,21 +80,90 @@ export default function Home() {
     if (typeof window === "undefined" || !("wakeLock" in navigator)) return;
     try {
       wakeLockRef.current = await navigator.wakeLock.request("screen");
-      setWakeLockActive(true);
-      wakeLockRef.current.addEventListener("release", () => {
-        setWakeLockActive(false);
-      });
     } catch {
-      setWakeLockActive(false);
+      // Wake lock request failed; the app continues to work.
     }
   }, []);
 
   const reacquireWakeLock = useCallback(async () => {
     if (typeof document === "undefined" || !wakeLockRef.current) return;
-    if (document.visibilityState === "visible" && !wakeLockActive) {
+    if (document.visibilityState === "visible") {
       await requestWakeLock();
     }
-  }, [requestWakeLock, wakeLockActive]);
+  }, [requestWakeLock]);
+
+  const stopListening = useCallback(() => {
+    listeningRef.current = false;
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    recognitionRef.current?.stop();
+  }, []);
+
+  const processRecognizedText = useCallback(async () => {
+    const text = transcriptRef.current.trim();
+    if (!text) {
+      setErrorMessage("Nenhuma fala detectada.");
+      setState("ERROR");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/demand", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          timestamp: new Date().toISOString(),
+          sessionId: sessionIdRef.current,
+        }),
+      });
+
+      const data = (await response.json()) as DemandResponse;
+
+      if (!response.ok || data.status === "error" || !data.speech) {
+        setErrorMessage(data.speech || "Erro ao processar a demanda.");
+        setState("ERROR");
+        return;
+      }
+
+      setResponseText(data.speech);
+      setState("RESULT");
+      speak(data.speech);
+    } catch {
+      setErrorMessage("Erro de comunicação com o assistente.");
+      setState("ERROR");
+    }
+  }, [speak]);
+
+  const startListening = useCallback(() => {
+    if (!recognitionRef.current) {
+      setErrorMessage("Reconhecimento de voz não disponível.");
+      setState("ERROR");
+      return;
+    }
+
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+
+    sessionIdRef.current = crypto.randomUUID();
+    transcriptRef.current = "";
+    setRecognizedText("");
+    setResponseText("");
+    setErrorMessage("");
+    setState("LISTENING");
+    listeningRef.current = true;
+
+    try {
+      recognitionRef.current.start();
+    } catch {
+      setErrorMessage("Não foi possível iniciar o microfone.");
+      setState("ERROR");
+      listeningRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
     requestWakeLock();
@@ -107,12 +186,8 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const SpeechRecognition =
-      (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ||
-      (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike }).webkitSpeechRecognition;
-
+    const SpeechRecognition = getSpeechRecognitionConstructor();
     if (!SpeechRecognition) {
-      setErrorMessage("Seu navegador não suporta reconhecimento de voz.");
       return;
     }
 
@@ -156,17 +231,14 @@ export default function Home() {
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       if (event.error === "no-speech") {
         setErrorMessage("Nenhuma fala detectada.");
-        setState("ERROR");
       } else if (event.error === "audio-capture") {
         setErrorMessage("Problema ao capturar áudio.");
-        setState("ERROR");
       } else if (event.error === "not-allowed") {
         setErrorMessage("Permissão de microfone negada.");
-        setState("ERROR");
       } else {
         setErrorMessage("Erro no reconhecimento de voz.");
-        setState("ERROR");
       }
+      setState("ERROR");
       listeningRef.current = false;
     };
 
@@ -178,80 +250,7 @@ export default function Home() {
     };
 
     recognitionRef.current = recognition;
-  }, []);
-
-  const processRecognizedText = async () => {
-    const text = transcriptRef.current.trim();
-    if (!text) {
-      setErrorMessage("Nenhuma fala detectada.");
-      setState("ERROR");
-      return;
-    }
-
-    try {
-      const response = await fetch("/api/demand", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          timestamp: new Date().toISOString(),
-          sessionId: sessionIdRef.current,
-        }),
-      });
-
-      const data = (await response.json()) as DemandResponse;
-
-      if (!response.ok || data.status === "error" || !data.speech) {
-        setErrorMessage(data.speech || "Erro ao processar a demanda.");
-        setState("ERROR");
-        return;
-      }
-
-      setResponseText(data.speech);
-      setState("RESULT");
-      speak(data.speech);
-    } catch {
-      setErrorMessage("Erro de comunicação com o assistente.");
-      setState("ERROR");
-    }
-  };
-
-  const startListening = () => {
-    if (!recognitionRef.current) {
-      setErrorMessage("Reconhecimento de voz não disponível.");
-      setState("ERROR");
-      return;
-    }
-
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-
-    sessionIdRef.current = crypto.randomUUID();
-    transcriptRef.current = "";
-    setRecognizedText("");
-    setResponseText("");
-    setErrorMessage("");
-    setState("LISTENING");
-    listeningRef.current = true;
-
-    try {
-      recognitionRef.current.start();
-    } catch {
-      setErrorMessage("Não foi possível iniciar o microfone.");
-      setState("ERROR");
-      listeningRef.current = false;
-    }
-  };
-
-  const stopListening = () => {
-    listeningRef.current = false;
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
-    }
-    recognitionRef.current?.stop();
-  };
+  }, [processRecognizedText, stopListening]);
 
   useEffect(() => {
     if (state === "ERROR") {
@@ -280,33 +279,34 @@ export default function Home() {
       >
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">Alexo</h1>
 
-        <button
-          onClick={state === "LISTENING" ? stopListening : startListening}
-          disabled={state === "PROCESSING" || state === "RESULT"}
-          className="flex h-48 w-48 items-center justify-center rounded-full bg-white/20 text-6xl font-bold backdrop-blur-sm transition-transform hover:scale-105 active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
-          aria-label={state === "LISTENING" ? "Parar de ouvir" : "Falar com o Alexo"}
-        >
-          {state === "LISTENING" ? "⏹" : "🎤"}
-        </button>
+        {!isSpeechSupported ? (
+          <p className="text-2xl font-semibold">Seu navegador não suporta reconhecimento de voz.</p>
+        ) : (
+          <>
+            <button
+              onClick={state === "LISTENING" ? stopListening : startListening}
+              disabled={state === "PROCESSING" || state === "RESULT"}
+              className="flex h-48 w-48 items-center justify-center rounded-full bg-white/20 text-6xl font-bold backdrop-blur-sm transition-transform hover:scale-105 active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+              aria-label={state === "LISTENING" ? "Parar de ouvir" : "Falar com o Alexo"}
+            >
+              {state === "LISTENING" ? "Parar" : "Falar"}
+            </button>
 
-        <p className="text-2xl font-semibold sm:text-3xl">{current.label}</p>
+            <p className="text-2xl font-semibold sm:text-3xl">{current.label}</p>
 
-        {state === "LISTENING" && recognizedText && (
-          <p className="text-xl opacity-90">{recognizedText}</p>
+            {state === "LISTENING" && recognizedText && (
+              <p className="text-xl opacity-90">{recognizedText}</p>
+            )}
+
+            {state === "RESULT" && responseText && (
+              <p className="text-2xl font-medium leading-relaxed">{responseText}</p>
+            )}
+
+            {state === "ERROR" && errorMessage && (
+              <p className="text-xl font-medium">{errorMessage}</p>
+            )}
+          </>
         )}
-
-        {state === "RESULT" && responseText && (
-          <p className="text-2xl font-medium leading-relaxed">{responseText}</p>
-        )}
-
-        {state === "ERROR" && errorMessage && (
-          <p className="text-xl font-medium">{errorMessage}</p>
-        )}
-      </div>
-
-      <div className="mt-8 flex items-center gap-2 text-sm text-zinc-500">
-        <span className={`h-2 w-2 rounded-full ${wakeLockActive ? "bg-emerald-500" : "bg-zinc-600"}`} />
-        <span>{wakeLockActive ? "Tela mantida ligada" : "Wake lock inativo"}</span>
       </div>
     </div>
   );
