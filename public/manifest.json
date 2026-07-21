@@ -1,0 +1,18 @@
+{
+  "name": "Alexo - Assistente de Voz",
+  "short_name": "Alexo",
+  "description": "Assistente de voz para criação de demandas via n8n",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait",
+  "lang": "pt-BR",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}
