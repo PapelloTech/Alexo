@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 type AppState = "IDLE" | "LISTENING" | "PROCESSING" | "RESULT" | "ERROR";
 
@@ -44,17 +44,35 @@ function getSpeechRecognitionConstructor():
   );
 }
 
+function useIsClient() {
+  return useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  );
+}
+
+function useIsSpeechSupported() {
+  return useSyncExternalStore(
+    () => () => {},
+    () => !!getSpeechRecognitionConstructor(),
+    () => true
+  );
+}
+
 export default function Home() {
   const [state, setState] = useState<AppState>("IDLE");
   const [recognizedText, setRecognizedText] = useState("");
   const [responseText, setResponseText] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
-  const [isSpeechSupported] = useState(() => !!getSpeechRecognitionConstructor());
+  const isClient = useIsClient();
+  const isSpeechSupported = useIsSpeechSupported();
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listeningRef = useRef(false);
+  const shouldProcessAfterEndRef = useRef(false);
   const sessionIdRef = useRef<string>("");
   const transcriptRef = useRef<string>("");
 
@@ -92,12 +110,13 @@ export default function Home() {
     }
   }, [requestWakeLock]);
 
-  const stopListening = useCallback(() => {
-    listeningRef.current = false;
+  const stopListening = useCallback((shouldProcess = false) => {
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
+    shouldProcessAfterEndRef.current = shouldProcess;
+    listeningRef.current = false;
     recognitionRef.current?.stop();
   }, []);
 
@@ -148,6 +167,7 @@ export default function Home() {
       window.speechSynthesis.cancel();
     }
 
+    shouldProcessAfterEndRef.current = false;
     sessionIdRef.current = crypto.randomUUID();
     transcriptRef.current = "";
     setRecognizedText("");
@@ -191,6 +211,8 @@ export default function Home() {
       return;
     }
 
+    shouldProcessAfterEndRef.current = false;
+
     const recognition = new SpeechRecognition();
     recognition.lang = "pt-BR";
     recognition.continuous = true;
@@ -223,12 +245,13 @@ export default function Home() {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = setTimeout(() => {
         if (listeningRef.current) {
-          stopListening();
+          stopListening(true);
         }
       }, 1500);
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      shouldProcessAfterEndRef.current = false;
       if (event.error === "no-speech") {
         setErrorMessage("Nenhuma fala detectada.");
       } else if (event.error === "audio-capture") {
@@ -243,7 +266,8 @@ export default function Home() {
     };
 
     recognition.onend = () => {
-      if (listeningRef.current) {
+      if (shouldProcessAfterEndRef.current) {
+        shouldProcessAfterEndRef.current = false;
         setState("PROCESSING");
         processRecognizedText();
       }
@@ -279,12 +303,12 @@ export default function Home() {
       >
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">Alexo</h1>
 
-        {!isSpeechSupported ? (
+        {isClient && !isSpeechSupported ? (
           <p className="text-2xl font-semibold">Seu navegador não suporta reconhecimento de voz.</p>
         ) : (
           <>
             <button
-              onClick={state === "LISTENING" ? stopListening : startListening}
+              onClick={state === "LISTENING" ? () => stopListening(true) : startListening}
               disabled={state === "PROCESSING" || state === "RESULT"}
               className="flex h-48 w-48 items-center justify-center rounded-full bg-white/20 text-6xl font-bold backdrop-blur-sm transition-transform hover:scale-105 active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
               aria-label={state === "LISTENING" ? "Parar de ouvir" : "Falar com o Alexo"}
