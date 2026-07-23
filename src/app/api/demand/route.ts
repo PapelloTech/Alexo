@@ -4,7 +4,8 @@ const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
 const ALEXO_SHARED_SECRET = process.env.ALEXO_SHARED_SECRET;
 
 interface DemandRequest {
-  text: string;
+  event?: "utterance" | "cancel";
+  text?: string;
   timestamp?: string;
   sessionId?: string;
 }
@@ -34,8 +35,9 @@ export async function POST(request: Request) {
     );
   }
 
+  const event = body.event === "cancel" ? "cancel" : "utterance";
   const text = typeof body.text === "string" ? body.text.trim() : "";
-  if (!text) {
+  if (event === "utterance" && !text) {
     return NextResponse.json(
       { speech: "Nenhum texto foi enviado.", status: "error" },
       { status: 400 }
@@ -43,6 +45,7 @@ export async function POST(request: Request) {
   }
 
   const payload = {
+    event,
     text,
     timestamp: body.timestamp || new Date().toISOString(),
     sessionId: body.sessionId || crypto.randomUUID(),
@@ -83,6 +86,8 @@ export async function POST(request: Request) {
     const data = (await n8nResponse.json()) as {
       speech?: string;
       status?: string;
+      expectsReply?: boolean;
+      sessionId?: string;
       action?: string;
       data?: unknown;
     };
@@ -101,6 +106,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       speech: data.speech,
       status: data.status || "success",
+      expectsReply: data.expectsReply,
+      sessionId: data.sessionId,
       action: data.action,
       data: data.data,
     });
