@@ -29,6 +29,5 @@ export const clientConfig = {
     4_000
   ),
   wakeWordEnabled: process.env.NEXT_PUBLIC_WAKE_WORD_ENABLED === "true",
-  picovoiceAccessKey: process.env.NEXT_PUBLIC_PICOVOICE_ACCESS_KEY ?? "",
-  picovoiceKeywordPath: process.env.NEXT_PUBLIC_PICOVOICE_KEYWORD_PATH ?? "",
+  wakeWordModelPath: process.env.NEXT_PUBLIC_WAKE_WORD_MODEL_PATH ?? "/openwakeword/models/alexo.onnx",
 };

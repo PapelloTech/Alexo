@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { Porcupine } from "@picovoice/porcupine-web";
+import type { Microphone } from "openwakeword-web/microphone";
+import type { OpenWakeWord } from "openwakeword-web";
 import { clientConfig } from "@/lib/config";
 
 type AppState = "IDLE" | "LISTENING" | "PROCESSING" | "SPEAKING" | "RESULT" | "ERROR";
@@ -92,7 +93,7 @@ export default function Home() {
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
-  const wakeEngineRef = useRef<Porcupine | null>(null);
+  const wakeEngineRef = useRef<{ engine: OpenWakeWord; microphone: Microphone } | null>(null);
   const speechTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const conversationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resultTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,14 +130,12 @@ export default function Home() {
   }, [releaseWakeLock]);
 
   const stopWakeWord = useCallback(async () => {
-    const engine = wakeEngineRef.current;
+    const wakeWord = wakeEngineRef.current;
     wakeEngineRef.current = null;
-    if (!engine) return;
+    if (!wakeWord) return;
 
-    const { WebVoiceProcessor } = await import("@picovoice/web-voice-processor");
-    await WebVoiceProcessor.unsubscribe(engine).catch(() => undefined);
-    await WebVoiceProcessor.reset().catch(() => undefined);
-    await engine.release().catch(() => undefined);
+    await wakeWord.microphone.stop().catch(() => undefined);
+    await wakeWord.engine.reset().catch(() => undefined);
   }, []);
 
   const discardSession = useCallback(() => {
@@ -208,37 +207,40 @@ export default function Home() {
       !mountedRef.current ||
       state !== "IDLE" ||
       !clientConfig.wakeWordEnabled ||
-      !clientConfig.picovoiceAccessKey ||
-      !clientConfig.picovoiceKeywordPath ||
       wakeEngineRef.current
     ) return;
 
     try {
-      const [{ Porcupine }, { WebVoiceProcessor }] = await Promise.all([
-        import("@picovoice/porcupine-web"),
-        import("@picovoice/web-voice-processor"),
+      const [{ OpenWakeWord, configureOrt }, { Microphone }] = await Promise.all([
+        import("openwakeword-web"),
+        import("openwakeword-web/microphone"),
       ]);
-      const engine = await Porcupine.create(
-        clientConfig.picovoiceAccessKey,
-        { publicPath: clientConfig.picovoiceKeywordPath, label: "Alexo", sensitivity: 0.6 },
-        () => {
+      configureOrt({ numThreads: 1 });
+      const engine = await OpenWakeWord.create({
+        baseUrl: "/openwakeword/models/",
+        wakewordModels: [{ name: "alexo", url: clientConfig.wakeWordModelPath }],
+        threshold: 0.5,
+        onDetection: () => {
           if (mountedRef.current) {
             setWakeWordStatus("");
             void stopWakeWord();
-            const event = new Event("alexo-wake-word");
-            window.dispatchEvent(event);
+            window.dispatchEvent(new Event("alexo-wake-word"));
           }
         },
-        { publicPath: "/porcupine_params.pv" }
+      });
+      const microphone = new Microphone(
+        (frame) => void engine.predict(frame),
+        { workletUrl: "/openwakeword/mic-worklet.js" }
       );
       if (!mountedRef.current || state !== "IDLE") {
-        await engine.release();
+        await engine.reset();
         return;
       }
-      wakeEngineRef.current = engine;
-      await WebVoiceProcessor.subscribe(engine);
+      wakeEngineRef.current = { engine, microphone };
+      await microphone.start();
       setWakeWordStatus("Diga Alexo para começar");
     } catch {
+      await stopWakeWord();
       setWakeWordStatus("Ativação por voz indisponível. Use Falar.");
     }
   }, [state, stopWakeWord]);
