@@ -105,7 +105,7 @@ export default function Home() {
   const sessionIdRef = useRef<string | null>(null);
   const transcriptRef = useRef("");
   const awaitingReplyRef = useRef(false);
-  const beginListeningRef = useRef<(continuation: boolean, deadline?: number) => Promise<void>>(async () => undefined);
+  const beginListeningRef = useRef<(continuation: boolean, deadline?: number, resetTranscript?: boolean) => Promise<void>>(async () => undefined);
   const [awaitingReply, setAwaitingReply] = useState(false);
   const mountedRef = useRef(true);
 
@@ -252,7 +252,8 @@ export default function Home() {
 
   const beginListening = useCallback(async (
     continuation: boolean,
-    deadline = Date.now() + (continuation ? clientConfig.replyTimeoutMs : clientConfig.initialSpeechTimeoutMs)
+    deadline = Date.now() + (continuation ? clientConfig.replyTimeoutMs : clientConfig.initialSpeechTimeoutMs),
+    resetTranscript = true
   ) => {
     const SpeechRecognition = getSpeechRecognitionConstructor();
     if (!SpeechRecognition) {
@@ -265,8 +266,10 @@ export default function Home() {
     await stopWakeWord();
     clearTimer(speechTimeoutRef);
     ignoreRecognitionEventsRef.current = false;
-    transcriptRef.current = "";
-    setRecognizedText("");
+    if (resetTranscript) {
+      transcriptRef.current = "";
+      setRecognizedText("");
+    }
     setErrorMessage("");
     setState("LISTENING");
     awaitingReplyRef.current = continuation;
@@ -279,15 +282,16 @@ export default function Home() {
     recognition.maxAlternatives = 1;
     recognitionRef.current = recognition;
 
+    const baseTranscript = transcriptRef.current;
     recognition.onresult = (event) => {
       let finalText = "";
       let interimText = "";
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      for (let index = 0; index < event.results.length; index += 1) {
         const text = event.results[index][0].transcript.trim();
         if (event.results[index].isFinal) finalText += `${text} `;
         else interimText += `${text} `;
       }
-      if (finalText) transcriptRef.current = `${transcriptRef.current} ${finalText}`.trim();
+      transcriptRef.current = `${baseTranscript} ${finalText}`.trim();
       setRecognizedText(`${transcriptRef.current} ${interimText}`.trim());
       clearTimer(speechTimeoutRef);
       speechTimeoutRef.current = setTimeout(() => {
@@ -370,7 +374,7 @@ export default function Home() {
           }
         })();
       } else if (Date.now() < deadline) {
-        window.setTimeout(() => void beginListeningRef.current(continuation, deadline), 100);
+        window.setTimeout(() => void beginListeningRef.current(continuation, deadline, false), 100);
       }
     };
 
