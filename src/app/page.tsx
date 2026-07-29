@@ -179,13 +179,17 @@ export default function Home() {
 
   const sendDemand = useCallback(async (event: DemandEvent, text = "") => {
     const sessionId = sessionIdRef.current;
-    if (!sessionId) return null;
+    if (!sessionId) {
+      console.warn("[Alexo] sendDemand abortado: sem sessionId", { event, text });
+      return null;
+    }
 
     networkControllerRef.current?.abort();
     const controller = new AbortController();
     networkControllerRef.current = controller;
     const timeout = setTimeout(() => controller.abort(), clientConfig.networkTimeoutMs);
 
+    console.log("[Alexo] sendDemand ->", { event, text, sessionId });
     try {
       const response = await fetch("/api/demand", {
         method: "POST",
@@ -194,8 +198,12 @@ export default function Home() {
         signal: controller.signal,
       });
       const data = (await response.json()) as DemandResponse;
+      console.log("[Alexo] sendDemand <-", { status: response.status, data });
       if (!response.ok) throw new Error(data.speech || "Erro ao processar a demanda.");
       return data;
+    } catch (error) {
+      console.error("[Alexo] sendDemand erro", error);
+      throw error;
     } finally {
       clearTimeout(timeout);
       if (networkControllerRef.current === controller) networkControllerRef.current = null;
@@ -221,6 +229,7 @@ export default function Home() {
         wakewordModels: [{ name: "alexo", url: clientConfig.wakeWordModelPath }],
         threshold: 0.5,
         onDetection: () => {
+          console.log("[Alexo] wake word detectado");
           if (mountedRef.current) {
             setWakeWordStatus("");
             void stopWakeWord();
@@ -239,7 +248,9 @@ export default function Home() {
       wakeEngineRef.current = { engine, microphone };
       await microphone.start();
       setWakeWordStatus("Diga Alexo para começar");
-    } catch {
+      console.log("[Alexo] wake word ativo");
+    } catch (error) {
+      console.error("[Alexo] erro ao iniciar wake word", error);
       await stopWakeWord();
       setWakeWordStatus("Ativação por voz indisponível. Use Falar.");
     }
@@ -303,6 +314,7 @@ export default function Home() {
     };
 
     recognition.onerror = (event) => {
+      console.warn("[Alexo] recognition.onerror", event.error, { ignored: ignoreRecognitionEventsRef.current });
       if (ignoreRecognitionEventsRef.current || event.error === "no-speech") return;
       processOnEndRef.current = false;
       ignoreRecognitionEventsRef.current = true;
@@ -319,6 +331,12 @@ export default function Home() {
     };
 
     recognition.onend = () => {
+      console.log("[Alexo] recognition.onend", {
+        ignored: ignoreRecognitionEventsRef.current,
+        processOnEnd: processOnEndRef.current,
+        transcript: transcriptRef.current,
+        deadlineReached: Date.now() >= deadline,
+      });
       activeRecognitionRef.current = false;
       clearTimer(speechTimeoutRef);
       if (recognitionRef.current === recognition) recognitionRef.current = null;
@@ -337,6 +355,7 @@ export default function Home() {
             const response = await sendDemand("utterance", text);
             if (!response) return;
             if (response.sessionId !== sessionIdRef.current || !response.speech || !response.status || typeof response.expectsReply !== "boolean") {
+              console.error("[Alexo] resposta invalida do assistente", response);
               throw new Error("Resposta inválida do assistente.");
             }
             if (!(["need_input", "confirming", "success", "cancelled", "error"] as string[]).includes(response.status)) {
@@ -351,6 +370,7 @@ export default function Home() {
             const utterance = new SpeechSynthesisUtterance(response.speech);
             utterance.lang = "pt-BR";
             utterance.onend = () => {
+              console.log("[Alexo] TTS onend", { expectsReply: response.expectsReply });
               if (response.expectsReply && sessionIdRef.current === response.sessionId) {
                 postTtsTimeoutRef.current = setTimeout(() => void beginListeningRef.current(true), clientConfig.postTtsDelayMs);
               } else {
@@ -359,7 +379,8 @@ export default function Home() {
                 scheduleResultReset();
               }
             };
-            utterance.onerror = () => {
+            utterance.onerror = (event) => {
+              console.error("[Alexo] TTS onerror", event);
               discardSession();
               setErrorMessage("Não foi possível reproduzir a resposta.");
               setState("ERROR");
@@ -367,6 +388,7 @@ export default function Home() {
             };
             window.speechSynthesis.speak(utterance);
           } catch (error) {
+            console.error("[Alexo] erro ao processar utterance", error);
             discardSession();
             setErrorMessage(error instanceof Error ? error.message : "Erro de comunicação com o assistente.");
             setState("ERROR");
@@ -374,15 +396,20 @@ export default function Home() {
           }
         })();
       } else if (Date.now() < deadline) {
+        console.log("[Alexo] reiniciando reconhecimento (sem fala final detectada)");
         window.setTimeout(() => void beginListeningRef.current(continuation, deadline, false), 100);
+      } else {
+        console.warn("[Alexo] deadline atingido sem fala final");
       }
     };
 
     try {
       activeRecognitionRef.current = true;
       recognition.start();
+      console.log("[Alexo] recognition.start()", { continuation, deadlineInMs: deadline - Date.now() });
       speechTimeoutRef.current = setTimeout(() => {
         if (!activeRecognitionRef.current) return;
+        console.warn("[Alexo] deadline timeout: parando reconhecimento", { continuation });
         processOnEndRef.current = false;
         recognition.stop();
         if (continuation) {
@@ -395,7 +422,8 @@ export default function Home() {
           returnToIdle();
         }
       }, Math.max(0, deadline - Date.now()));
-    } catch {
+    } catch (error) {
+      console.error("[Alexo] erro ao iniciar microfone", error);
       activeRecognitionRef.current = false;
       discardSession();
       setErrorMessage("Não foi possível iniciar o microfone.");
