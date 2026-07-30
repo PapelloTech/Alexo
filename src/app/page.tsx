@@ -261,6 +261,57 @@ export default function Home() {
     resultTimeoutRef.current = setTimeout(() => returnToIdle(), clientConfig.resultDisplayMs);
   }, [clearTimer, returnToIdle]);
 
+  const processUtterance = useCallback((text: string) => {
+    setLastUtterance(text);
+    setRecognizedText("");
+    setState("PROCESSING");
+    void (async () => {
+      try {
+        const response = await sendDemand("utterance", text);
+        if (!response) return;
+        if (response.sessionId !== sessionIdRef.current || !response.speech || !response.status || typeof response.expectsReply !== "boolean") {
+          console.error("[Alexo] resposta invalida do assistente", response);
+          throw new Error("Resposta inválida do assistente.");
+        }
+        if (!(["need_input", "confirming", "success", "cancelled", "error"] as string[]).includes(response.status)) {
+          throw new Error("Resposta inválida do assistente.");
+        }
+        setResponseText(response.speech);
+        setResponseStatus(response.status);
+        setConversationData(response.data ?? null);
+        awaitingReplyRef.current = response.expectsReply;
+        setState("SPEAKING");
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(response.speech);
+        utterance.lang = "pt-BR";
+        utterance.onend = () => {
+          console.log("[Alexo] TTS onend", { expectsReply: response.expectsReply });
+          if (response.expectsReply && sessionIdRef.current === response.sessionId) {
+            postTtsTimeoutRef.current = setTimeout(() => void beginListeningRef.current(true), clientConfig.postTtsDelayMs);
+          } else {
+            discardSession();
+            setState("RESULT");
+            scheduleResultReset();
+          }
+        };
+        utterance.onerror = (event) => {
+          console.error("[Alexo] TTS onerror", event);
+          discardSession();
+          setErrorMessage("Não foi possível reproduzir a resposta.");
+          setState("ERROR");
+          scheduleResultReset();
+        };
+        window.speechSynthesis.speak(utterance);
+      } catch (error) {
+        console.error("[Alexo] erro ao processar utterance", error);
+        discardSession();
+        setErrorMessage(error instanceof Error ? error.message : "Erro de comunicação com o assistente.");
+        setState("ERROR");
+        scheduleResultReset();
+      }
+    })();
+  }, [discardSession, scheduleResultReset, sendDemand]);
+
   const beginListening = useCallback(async (
     continuation: boolean,
     deadline = Date.now() + (continuation ? clientConfig.replyTimeoutMs : clientConfig.initialSpeechTimeoutMs),
@@ -344,62 +395,28 @@ export default function Home() {
         ignoreRecognitionEventsRef.current = false;
         return;
       }
-      if (processOnEndRef.current && transcriptRef.current.trim()) {
+      const hasTranscript = Boolean(transcriptRef.current.trim());
+      if (processOnEndRef.current && hasTranscript) {
         processOnEndRef.current = false;
-        const text = transcriptRef.current.trim();
-        setLastUtterance(text);
-        setRecognizedText("");
-        setState("PROCESSING");
-        void (async () => {
-          try {
-            const response = await sendDemand("utterance", text);
-            if (!response) return;
-            if (response.sessionId !== sessionIdRef.current || !response.speech || !response.status || typeof response.expectsReply !== "boolean") {
-              console.error("[Alexo] resposta invalida do assistente", response);
-              throw new Error("Resposta inválida do assistente.");
-            }
-            if (!(["need_input", "confirming", "success", "cancelled", "error"] as string[]).includes(response.status)) {
-              throw new Error("Resposta inválida do assistente.");
-            }
-            setResponseText(response.speech);
-            setResponseStatus(response.status);
-            setConversationData(response.data ?? null);
-            awaitingReplyRef.current = response.expectsReply;
-            setState("SPEAKING");
-            window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(response.speech);
-            utterance.lang = "pt-BR";
-            utterance.onend = () => {
-              console.log("[Alexo] TTS onend", { expectsReply: response.expectsReply });
-              if (response.expectsReply && sessionIdRef.current === response.sessionId) {
-                postTtsTimeoutRef.current = setTimeout(() => void beginListeningRef.current(true), clientConfig.postTtsDelayMs);
-              } else {
-                discardSession();
-                setState("RESULT");
-                scheduleResultReset();
-              }
-            };
-            utterance.onerror = (event) => {
-              console.error("[Alexo] TTS onerror", event);
-              discardSession();
-              setErrorMessage("Não foi possível reproduzir a resposta.");
-              setState("ERROR");
-              scheduleResultReset();
-            };
-            window.speechSynthesis.speak(utterance);
-          } catch (error) {
-            console.error("[Alexo] erro ao processar utterance", error);
-            discardSession();
-            setErrorMessage(error instanceof Error ? error.message : "Erro de comunicação com o assistente.");
-            setState("ERROR");
-            scheduleResultReset();
-          }
-        })();
+        processUtterance(transcriptRef.current.trim());
       } else if (Date.now() < deadline) {
         console.log("[Alexo] reiniciando reconhecimento (sem fala final detectada)");
         window.setTimeout(() => void beginListeningRef.current(continuation, deadline, false), 100);
+      } else if (hasTranscript) {
+        console.warn("[Alexo] deadline atingido, processando transcript pendente", transcriptRef.current);
+        processOnEndRef.current = false;
+        processUtterance(transcriptRef.current.trim());
       } else {
-        console.warn("[Alexo] deadline atingido sem fala final");
+        console.warn("[Alexo] deadline atingido sem fala detectada");
+        if (continuation) {
+          void sendDemand("cancel").catch(() => undefined);
+          setResponseText("Conversa encerrada.");
+          setResponseStatus("cancelled");
+          setState("RESULT");
+          scheduleResultReset();
+        } else {
+          returnToIdle();
+        }
       }
     };
 
@@ -430,7 +447,7 @@ export default function Home() {
       setState("ERROR");
       scheduleResultReset();
     }
-  }, [clearTimer, discardSession, returnToIdle, scheduleResultReset, sendDemand, stopWakeWord]);
+  }, [clearTimer, discardSession, processUtterance, returnToIdle, scheduleResultReset, sendDemand, stopWakeWord]);
 
   useEffect(() => {
     beginListeningRef.current = beginListening;
