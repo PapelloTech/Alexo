@@ -426,10 +426,14 @@ export default function Home() {
       console.log("[Alexo] recognition.start()", { continuation, deadlineInMs: deadline - Date.now() });
       speechTimeoutRef.current = setTimeout(() => {
         if (!activeRecognitionRef.current) return;
-        console.warn("[Alexo] deadline timeout: parando reconhecimento", { continuation });
+        const pendingTranscript = transcriptRef.current.trim();
+        console.warn("[Alexo] deadline timeout: parando reconhecimento", { continuation, pendingTranscript });
         processOnEndRef.current = false;
+        ignoreRecognitionEventsRef.current = true;
         recognition.stop();
-        if (continuation) {
+        if (pendingTranscript) {
+          processUtterance(pendingTranscript);
+        } else if (continuation) {
           void sendDemand("cancel").catch(() => undefined);
           setResponseText("Conversa encerrada.");
           setResponseStatus("cancelled");
